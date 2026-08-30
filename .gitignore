@@ -1,0 +1,14 @@
+# 构建产物
+/fasteredge2api
+*.exe
+*.test
+
+# 运行时数据
+/data/
+*.json.tmp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
