@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -105,7 +106,8 @@ func cmdServe(args []string) error {
 
 	select {
 	case err := <-errCh:
-		if err != nil && !errors.Is(err, context.Canceled) {
+		// ErrServerClosed 是 Shutdown 触发后的正常返回值,不算错误。
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
 			_ = eng.Close(context.Background())
 			return err
 		}

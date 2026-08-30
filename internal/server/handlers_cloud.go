@@ -52,7 +52,7 @@ func (s *Server) handleCloudSetController(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req setControllerReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -91,7 +91,7 @@ func (s *Server) handleCloudRegisterService(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req registerServiceReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -143,7 +143,7 @@ func (s *Server) handleCloudSetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req setStatusReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

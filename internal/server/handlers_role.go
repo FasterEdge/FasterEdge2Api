@@ -25,7 +25,7 @@ func (s *Server) handleGetRole(w http.ResponseWriter, r *http.Request) {
 // 注意:已注册 Cloud/EdgeRoleAbility 的节点应保持其初始角色,否则后续命令会因角色不匹配而失败。
 func (s *Server) handleSetRole(w http.ResponseWriter, r *http.Request) {
 	var req setRoleReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

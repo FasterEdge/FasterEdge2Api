@@ -10,18 +10,19 @@ import (
 
 // writeJSON 输出统一 JSON 响应。
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	var payload []byte
+	var err error
+	if body != nil {
+		payload, err = json.Marshal(body)
+		if err != nil {
+			// 编码失败时给出可读错误(此时尚未写头)。
+			status = http.StatusInternalServerError
+			payload = []byte(`{"ok":false,"error":{"message":"response encode failed"}}`)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	if body == nil {
-		_, _ = w.Write([]byte("null"))
-		return
-	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(body); err != nil {
-		// 编码失败时尽量给出可读错误。
-		http.Error(w, `{"ok":false,"error":{"message":"response encode failed"}}`, http.StatusInternalServerError)
-	}
+	_, _ = w.Write(payload)
 }
 
 // writeError 输出统一错误 JSON。
@@ -119,9 +120,14 @@ func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
 }
 
-// readJSONBody 解析请求体为 target 结构。空体返回空结构错误。
-func readJSONBody(r *http.Request, target any) error {
+// maxRequestBodyBytes 限制请求体大小,防止恶意大流量耗尽内存。
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
+// readJSONBody 解析请求体为 target 结构。空体返回错误。
+// w 用于 MaxBytesReader 触发超大请求时关闭连接。
+func readJSONBody(w http.ResponseWriter, r *http.Request, target any) error {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	return dec.Decode(target)

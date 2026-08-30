@@ -4,7 +4,6 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -40,6 +39,9 @@ func New(eng *engine.Engine, opts Options) *Server {
 	s.srv = &http.Server{
 		Handler:           s.recoverMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	return s
 }
@@ -201,12 +203,4 @@ func (s *Server) authed(r *http.Request, component, command string, args any) (a
 		return nil, types.ErrAuthenticationRequired
 	}
 	return s.engine.AuthenticatedCommand(r.Context(), cred, component, command, args)
-}
-
-// guardRunErr 检查后台运行时是否已异常退出;异常时返回错误文本。
-func (s *Server) guardRunErr() string {
-	if err := s.engine.Err(); err != nil {
-		return fmt.Sprintf("atom runtime stopped: %v", err)
-	}
-	return ""
 }

@@ -52,7 +52,7 @@ func (s *Server) handleEdgeSetZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req setZoneReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -89,7 +89,7 @@ func (s *Server) handleEdgeAddCapability(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req capabilityReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -113,7 +113,7 @@ func (s *Server) handleEdgeSetCapabilities(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var req setCapabilitiesReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleEdgeRecordLatency(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req recordLatencyReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -189,7 +189,7 @@ func (s *Server) handleEdgeSetOnline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req setOnlineReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

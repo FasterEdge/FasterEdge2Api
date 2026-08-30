@@ -35,7 +35,7 @@ type setNodeNameReq struct {
 // handleSetNodeName 设置本节点名。
 func (s *Server) handleSetNodeName(w http.ResponseWriter, r *http.Request) {
 	var req setNodeNameReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -66,7 +66,7 @@ type setDefaultIfaceReq struct {
 // handleSetDefaultIface 设置默认出网接口。
 func (s *Server) handleSetDefaultIface(w http.ResponseWriter, r *http.Request) {
 	var req setDefaultIfaceReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -99,7 +99,7 @@ type registerPeerReq struct {
 // handleRegisterPeer 注册一个对等节点。
 func (s *Server) handleRegisterPeer(w http.ResponseWriter, r *http.Request) {
 	var req registerPeerReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -135,7 +135,7 @@ type updatePeerReq struct {
 func (s *Server) handleUpdatePeer(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var req updatePeerReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

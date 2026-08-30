@@ -10,7 +10,7 @@ import (
 // issueTokenReq 是签发令牌的请求体。
 type issueTokenReq struct {
 	Subject   string `json:"subject"`
-	TTL       string `json:"ttl"`     // Go duration 字符串,例如 "1h";空则用默认
+	TTL       string `json:"ttl"`       // Go duration 字符串,例如 "1h";空则用默认
 	Algorithm string `json:"algorithm"` // 可选,默认 HMAC-SHA256
 }
 
@@ -18,7 +18,7 @@ type issueTokenReq struct {
 // 注意:该端点本身要求凭据,所以首次令牌请使用 CLI(`fasteredge2api token`)引导。
 func (s *Server) handleAuthIssue(w http.ResponseWriter, r *http.Request) {
 	var req issueTokenReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -53,7 +53,7 @@ type verifyTokenReq struct {
 // handleAuthVerify 校验一个传输编码形式的令牌,返回其主体。
 func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 	var req verifyTokenReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -79,7 +79,7 @@ type revokeTokenReq struct {
 // handleAuthRevoke 吊销指定主体的令牌。
 func (s *Server) handleAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	var req revokeTokenReq
-	if err := readJSONBody(r, &req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	fasteredge "github.com/FasterEdge/FasterEdge"
@@ -22,11 +24,15 @@ type Engine struct {
 	cfg  config.Config
 	atom *types.Atom
 
-	runCtx    context.Context
 	cancelRun context.CancelFunc
 	runDone   chan error
-	started   bool
+	runErr    atomic.Value // *runResult;由后台 goroutine 写入,Err()/Close() 只读
+	started   atomic.Bool
+	closeMu   sync.Mutex // 串行化 Close 的等待,避免多个调用者竞争 runDone
 }
+
+// runResult 包装后台运行结果,避免 atomic.Value 存储 nil error 触发 panic。
+type runResult struct{ err error }
 
 // New 根据配置构建 Atom:
 //  1. 注册基础组件(BaseData / BaseAbility / NetMapData / KeyringData);
@@ -150,54 +156,75 @@ func (e *Engine) Role() config.Role { return e.cfg.Role }
 // Start 在后台启动 Atom 运行时(监督 Runner 并负责优雅卸载)。
 // 返回后错误只能通过 Err() 获取。
 func (e *Engine) Start(parent context.Context) error {
-	if e.started {
+	if e.started.Load() {
 		return errors.New("engine already started")
 	}
 	if parent == nil {
 		return types.ErrNilContext
 	}
 	ctx, cancel := context.WithCancel(parent)
-	e.runCtx = ctx
 	e.cancelRun = cancel
 	e.runDone = make(chan error, 1)
-	e.started = true
+	e.started.Store(true)
 	go func() {
-		e.runDone <- fasteredge.RunAtom(ctx, e.atom, fasteredge.WithShutdownTimeout(e.cfg.ShutdownTimeout))
+		err := fasteredge.RunAtom(ctx, e.atom, fasteredge.WithShutdownTimeout(e.cfg.ShutdownTimeout))
+		e.runErr.Store(&runResult{err: err})
+		e.runDone <- err
 	}()
 	return nil
 }
 
 // Err 返回后台运行时是否已结束及其错误(非阻塞)。
+// 正常取消(上游 context.Canceled)不算错误,返回 nil。
+// 注意:该方法是只读的,不会消费 runDone,可安全地与 Close 并发调用。
 func (e *Engine) Err() error {
-	if !e.started {
+	if !e.started.Load() {
 		return nil
 	}
-	select {
-	case err := <-e.runDone:
-		return err
-	default:
+	v := e.runErr.Load()
+	if v == nil {
 		return nil
 	}
+	err := v.(*runResult).err
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return err
 }
 
 // Close 停止后台运行并优雅卸载全部组件,返回关闭错误。
+// 幂等且并发安全:重复调用 / 并发调用都安全;正常取消返回 nil。
 // 若未 Start,则仅执行卸载(用于 CLI 一次性场景)。
 func (e *Engine) Close(ctx context.Context) error {
 	if e == nil || e.atom == nil {
 		return types.ErrNilAtom
 	}
-	if e.started {
-		if e.cancelRun != nil {
-			e.cancelRun()
-		}
-		select {
-		case err := <-e.runDone:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	e.closeMu.Lock()
+	defer e.closeMu.Unlock()
+
+	if !e.started.Load() {
+		return fasteredge.CloseAtom(ctx, e.atom, fasteredge.WithShutdownTimeout(e.cfg.ShutdownTimeout))
 	}
-	return fasteredge.CloseAtom(ctx, e.atom, fasteredge.WithShutdownTimeout(e.cfg.ShutdownTimeout))
+	// 若已结束,直接返回存储的错误(幂等)。
+	if v := e.runErr.Load(); v != nil {
+		err := v.(*runResult).err
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return err
+	}
+	if e.cancelRun != nil {
+		e.cancelRun()
+	}
+	select {
+	case err := <-e.runDone:
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // AuthenticatedCommand 以 OneKey 凭据执行一次受认证的命令调用。
