@@ -43,9 +43,13 @@ The very first token must be issued in-process via the CLI, which also persists 
 **Step 2 — start the server** (must share the **same** `--keyring` path as `token`)
 
 ```bash
-# Cloud node
-./fasteredge2api serve --listen :8080 --node-name cloud-1 --role cloud \
+# Cloud node (loopback HTTP for local development only)
+./fasteredge2api serve --listen 127.0.0.1:8080 --node-name cloud-1 --role cloud \
   --keyring ./data/keyring.json
+
+# Native HTTPS for production
+./fasteredge2api serve --listen :8443 --node-name cloud-1 --role cloud \
+  --keyring ./data/keyring.json --tls-cert ./certs/server.crt --tls-key ./certs/server.key
 
 # Edge node
 ./fasteredge2api serve --listen :8081 --node-name edge-1 --role edge --keyring ./data/keyring.json
@@ -70,11 +74,12 @@ curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
 curl -H "$AUTH" http://127.0.0.1:8081/api/v1/edge/metrics
 curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"subject":"edge-2","ttl":"1h"}' http://127.0.0.1:8080/api/v1/auth/issue
+# data.token in the response is the ready-to-use Bearer token; do not reconstruct it from timestamps.
 ```
 
 ### 4. API Reference
 
-Every management endpoint requires `Authorization: Bearer <token>`.
+Except for liveness and the logo, every endpoint requires a strict `Authorization: Bearer <token>`. The CLI bootstraps the first `admin` token. All mutations and token administration require `admin`; other subjects are read-only.
 
 **Public endpoints (no auth)**
 
@@ -82,8 +87,8 @@ Every management endpoint requires `Authorization: Bearer <token>`.
 |--------|------|-------------|
 | GET | `/healthz` | Liveness probe |
 | GET | `/api/v1/logo` | Framework logo |
-| GET | `/api/v1/info` | Framework version info |
-| GET | `/api/v1/components` | Registered Data / Ability list |
+
+`/api/v1/info` and `/api/v1/components` require authentication to prevent unauthenticated version and role-capability enumeration.
 
 **Topology (NetMap)**
 
@@ -152,16 +157,20 @@ Flags override the same-named environment variables:
 | `--listen` | `FE2A_LISTEN` | `:8080` | HTTP listen address |
 | `--node-name` | `FE2A_NODE_NAME` | `edge-1` | Local node name |
 | `--role` | `FE2A_ROLE` | `neutral` | `cloud` / `edge` / `neutral` |
-| `--keyring` | `FE2A_KEYRING_PATH` | *(empty)* | KeyringData snapshot path |
-| — | `FE2A_SHUTDOWN_TIMEOUT` | `5s` | Graceful shutdown timeout |
+| `--keyring` | `FE2A_KEYRING_PATH` | *(empty)* | KeyringData snapshot path; required by `token` |
+| `--tls-cert` | `FE2A_TLS_CERT` | *(empty)* | TLS certificate path; requires key |
+| `--tls-key` | `FE2A_TLS_KEY` | *(empty)* | TLS private-key path; requires certificate |
+| — | `FE2A_SHUTDOWN_TIMEOUT` | `5s` | HTTP and component graceful shutdown timeout |
 
 ### 6. Security Notes
 
-- Every management endpoint (except the public ones) requires `Authorization: Bearer <token>`; tokens are OneKey HMAC-SHA256 signed and die immediately on expiry / revocation / rotation.
-- The first token can only be issued via `fasteredge2api token` (trusted in-process); there is no unauthenticated HTTP bootstrap endpoint.
-- `serve` and `token` **must** use the same `--keyring` path, otherwise authentication fails; after rotation all old tokens are invalid and must be re-issued.
-- The keyring snapshot is written with `0600` permissions (enforced by FasterEdge KeyringData) — keep it safe.
-- For production, bind to a private network / place behind a reverse proxy and enable TLS.
+- Only strict `Authorization: Bearer <token>` is accepted; bare tokens and other schemes are rejected. Expired, revoked, and pre-rotation tokens fail immediately.
+- The first `admin` token can only be issued via `fasteredge2api token`, which requires a persistent `--keyring`; no unauthenticated HTTP bootstrap endpoint exists.
+- All mutations and high-risk token operations require subject `admin`; node subjects are read-only.
+- `serve` and offline `token` use the same keyring path but cannot hold it simultaneously: an inter-process exclusive lock prevents snapshot overwrite. Use `/api/v1/auth/issue` while the server is running.
+- Issue/revoke/revoke-all/rotate mutations are atomically persisted immediately. Snapshot and lock files use `0600` permissions.
+- Production must use native HTTPS (`--tls-cert/--tls-key`) or a trusted TLS reverse proxy. Bearer credentials are replayable if exposed over plaintext HTTP.
+- Runtime role changes are rejected because role capabilities are fixed at mount time; restart with a different `--role`.
 
 ### 7. Development
 

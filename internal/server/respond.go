@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -121,7 +124,13 @@ func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 }
 
 // maxRequestBodyBytes 限制请求体大小,防止恶意大流量耗尽内存。
-const maxRequestBodyBytes = 1 << 20 // 1 MiB
+const maxRequestBodyBytes = 64 << 10 // 64 KiB
+
+var safeIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
+
+func validIdentifier(s string) bool {
+	return safeIdentifier.MatchString(strings.TrimSpace(s))
+}
 
 // readJSONBody 解析请求体为 target 结构。空体返回错误。
 // w 用于 MaxBytesReader 触发超大请求时关闭连接。
@@ -130,7 +139,17 @@ func readJSONBody(w http.ResponseWriter, r *http.Request, target any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(target)
+	if err := dec.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain a single JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 // toStringMap 把任意值先经 JSON 编解码转换为 map[string]any,

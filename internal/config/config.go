@@ -31,6 +31,9 @@ type Config struct {
 	// KeyringPath 是 KeyringData 持久化快照路径。
 	// 留空表示不持久化(每次重启密钥与令牌重置)。
 	KeyringPath string
+	// TLSCert/TLSKey 同时提供时启用原生 HTTPS。
+	TLSCert string
+	TLSKey  string
 	// ShutdownTimeout 是优雅退出时等待组件卸载的超时。
 	ShutdownTimeout time.Duration
 }
@@ -66,6 +69,8 @@ func FromEnv() (Config, error) {
 	if v := os.Getenv("FE2A_KEYRING_PATH"); v != "" {
 		cfg.KeyringPath = v
 	}
+	cfg.TLSCert = os.Getenv("FE2A_TLS_CERT")
+	cfg.TLSKey = os.Getenv("FE2A_TLS_KEY")
 	if v := os.Getenv("FE2A_SHUTDOWN_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -96,6 +101,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.NodeName) == "" {
 		return fmt.Errorf("config: node name is empty")
+	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return fmt.Errorf("config: TLS certificate and key must be provided together")
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("config: shutdown timeout must be positive")

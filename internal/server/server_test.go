@@ -123,8 +123,90 @@ func TestPublicEndpoints(t *testing.T) {
 		t.Fatalf("info: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("info status = %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("info status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestProtectedMetadataAndStrictBearer(t *testing.T) {
+	_, eng, base := startTestServer(t, config.RoleNeutral, "test-node")
+	tok := bootstrapToken(t, eng, "admin")
+	for _, path := range []string{"/api/v1/info", "/api/v1/components"} {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s status=%d, want 401", path, resp.StatusCode)
+		}
+	}
+	req, _ := http.NewRequest("GET", base+"/api/v1/topology", nil)
+	req.Header.Set("Authorization", tok) // 裸 token 不再接受
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("raw token status=%d, want 401", resp.StatusCode)
+	}
+}
+
+func TestNonAdminCannotManageTokens(t *testing.T) {
+	_, eng, base := startTestServer(t, config.RoleNeutral, "test-node")
+	admin := bootstrapToken(t, eng, "admin")
+	status, m := authedReq(t, base, admin, "POST", "/api/v1/auth/issue", map[string]any{"subject": "edge-1", "ttl": "10m"})
+	if status != http.StatusOK {
+		t.Fatalf("issue node token: %d %v", status, m)
+	}
+	issued := m["data"].(map[string]any)
+	nodeToken, ok := issued["token"].(string)
+	if !ok || nodeToken == "" {
+		t.Fatalf("issue response missing encoded token: %v", issued)
+	}
+	status, _ = authedReq(t, base, nodeToken, "POST", "/api/v1/auth/rotate", nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("node rotate status=%d, want 403", status)
+	}
+	status, _ = authedReq(t, base, nodeToken, "POST", "/api/v1/auth/issue", map[string]any{"subject": "attacker", "ttl": "1h"})
+	if status != http.StatusForbidden {
+		t.Fatalf("node issue status=%d, want 403", status)
+	}
+	// 普通令牌仍可执行只读拓扑查询。
+	status, _ = authedReq(t, base, nodeToken, "GET", "/api/v1/topology", nil)
+	if status != http.StatusOK {
+		t.Fatalf("node readonly status=%d, want 200", status)
+	}
+}
+
+func TestAuthBeforeBodyValidation(t *testing.T) {
+	_, _, base := startTestServer(t, config.RoleNeutral, "test-node")
+	req, _ := http.NewRequest("PUT", base+"/api/v1/role", strings.NewReader(`{"role":`))
+	req.Header.Set("Authorization", "Bearer invalid.invalid.invalid.invalid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid token + body status=%d, want 401", resp.StatusCode)
+	}
+}
+
+func TestRejectTrailingJSON(t *testing.T) {
+	_, eng, base := startTestServer(t, config.RoleNeutral, "test-node")
+	tok := bootstrapToken(t, eng, "admin")
+	req, _ := http.NewRequest("PUT", base+"/api/v1/node/name", strings.NewReader(`{"name":"one"}{"name":"two"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("trailing JSON status=%d, want 400", resp.StatusCode)
 	}
 }
 
@@ -239,9 +321,16 @@ func TestRoleEndpoints(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("get role: %d %v", status, m)
 	}
-	status, m = authedReq(t, base, tok, "PUT", "/api/v1/role", map[string]any{"role": "edge"})
+	if m["data"] != "neutral" {
+		t.Fatalf("neutral role = %v", m["data"])
+	}
+	status, m = authedReq(t, base, tok, "PUT", "/api/v1/role", map[string]any{"role": "neutral"})
 	if status != http.StatusOK {
-		t.Fatalf("set role: %d %v", status, m)
+		t.Fatalf("set same role: %d %v", status, m)
+	}
+	status, m = authedReq(t, base, tok, "PUT", "/api/v1/role", map[string]any{"role": "edge"})
+	if status != http.StatusConflict {
+		t.Fatalf("changing runtime role = %d, want 409: %v", status, m)
 	}
 }
 

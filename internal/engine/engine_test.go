@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -85,4 +87,74 @@ func TestCloseBeforeStart(t *testing.T) {
 	if err := eng.Close(context.Background()); err != nil {
 		t.Fatalf("Close before Start: %v", err)
 	}
+	if err := eng.Start(context.Background()); err == nil {
+		t.Fatal("Start after Close unexpectedly succeeded")
+	}
+}
+
+func TestConcurrentStartOnlyOneSucceeds(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close(context.Background())
+	var wg sync.WaitGroup
+	results := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- eng.Start(context.Background())
+		}()
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful Starts = %d, want 1", successes)
+	}
+}
+
+func TestKeyringMutationPersistsBeforeClose(t *testing.T) {
+	cfg := config.Default()
+	cfg.Listen = "127.0.0.1:0"
+	cfg.KeyringPath = filepath.Join(t.TempDir(), "keyring.json")
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close(context.Background())
+	if _, err := eng.IssueBootstrapToken(context.Background(), "write-through", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(cfg.KeyringPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte("write-through")) {
+		t.Fatal("issued token was not persisted before Close")
+	}
+}
+
+func TestPersistentKeyringExclusiveLock(t *testing.T) {
+	cfg := config.Default()
+	cfg.Listen = "127.0.0.1:0"
+	cfg.KeyringPath = filepath.Join(t.TempDir(), "keyring.json")
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("second engine acquired same keyring lock")
+	}
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New after lock release: %v", err)
+	}
+	_ = second.Close(context.Background())
 }

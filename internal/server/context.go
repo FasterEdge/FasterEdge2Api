@@ -8,40 +8,33 @@ import (
 	"github.com/FasterEdge/FasterEdge/ability"
 )
 
-// ctxKey 是请求上下文中凭据的键类型。
-type ctxKey struct{}
+type credentialKey struct{}
+type subjectKey struct{}
 
-// withCredential 把 OneKey 凭据放入请求上下文。
-func withCredential(ctx context.Context, cred ability.OneKeyCredential) context.Context {
-	return context.WithValue(ctx, ctxKey{}, cred)
+// withCredential 把已验证的 OneKey 凭据与主体放入请求上下文。
+func withCredential(ctx context.Context, cred ability.OneKeyCredential, subject string) context.Context {
+	ctx = context.WithValue(ctx, credentialKey{}, cred)
+	return context.WithValue(ctx, subjectKey{}, subject)
 }
 
-// credentialFromContext 取出请求上下文中的 OneKey 凭据。
 func credentialFromContext(ctx context.Context) (ability.OneKeyCredential, bool) {
-	cred, ok := ctx.Value(ctxKey{}).(ability.OneKeyCredential)
+	cred, ok := ctx.Value(credentialKey{}).(ability.OneKeyCredential)
 	return cred, ok
 }
 
-// credentialFromRequest 从 Authorization 头解析 OneKey 凭据。
-// 期望格式:Authorization: Bearer <subject.issuedNanos.expiresNanos.signature>
+func subjectFromContext(ctx context.Context) (string, bool) {
+	subject, ok := ctx.Value(subjectKey{}).(string)
+	return subject, ok && subject != ""
+}
+
+// credentialFromRequest 严格解析 RFC 6750 Bearer 凭据。
 func credentialFromRequest(r *http.Request) (ability.OneKeyCredential, bool) {
-	header := r.Header.Get("Authorization")
-	raw, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok {
-		raw, ok = strings.CutPrefix(header, "bearer ")
-	}
-	if !ok {
-		// 兼容无 scheme 形式。
-		raw = strings.TrimSpace(header)
-		if raw == "" {
-			return ability.OneKeyCredential{}, false
-		}
-	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return ability.OneKeyCredential{}, false
 	}
-	tok, err := ability.DecodeFromTransmission(raw)
+	tok, err := ability.DecodeFromTransmission(parts[1])
 	if err != nil {
 		return ability.OneKeyCredential{}, false
 	}

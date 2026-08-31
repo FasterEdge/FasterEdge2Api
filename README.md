@@ -43,9 +43,13 @@ go build -o fasteredge2api ./cmd/fasteredge2api
 **2. 再启动服务**(必须与 `token` 使用**同一** `--keyring` 路径)
 
 ```bash
-# 云端节点
-./fasteredge2api serve --listen :8080 --node-name cloud-1 --role cloud \
+# 云端节点(仅本机开发 HTTP)
+./fasteredge2api serve --listen 127.0.0.1:8080 --node-name cloud-1 --role cloud \
   --keyring ./data/keyring.json
+
+# 生产环境原生 HTTPS
+./fasteredge2api serve --listen :8443 --node-name cloud-1 --role cloud \
+  --keyring ./data/keyring.json --tls-cert ./certs/server.crt --tls-key ./certs/server.key
 
 # 边缘节点
 ./fasteredge2api serve --listen :8081 --node-name edge-1 --role edge --keyring ./data/keyring.json
@@ -83,6 +87,7 @@ curl -H "$AUTH" http://127.0.0.1:8081/api/v1/edge/metrics
 # 令牌管理
 curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"subject":"edge-2","ttl":"1h"}' http://127.0.0.1:8080/api/v1/auth/issue
+# 响应 data.token 是可直接使用的完整 Bearer token,不要用时间字段自行重建。
 curl -H "$AUTH" http://127.0.0.1:8080/api/v1/auth/status
 ```
 
@@ -102,7 +107,7 @@ FasterEdge2Api/
 
 ### 五、API 一览
 
-所有管理端点均需 `Authorization: Bearer <token>`(首个令牌由 CLI 引导签发)。响应统一包裹,字段名统一为 snake_case。
+除存活探针与 logo 外,所有端点均需严格的 `Authorization: Bearer <token>`。首个 `admin` 令牌由 CLI 引导签发;所有写操作及令牌签发/吊销/轮换只允许 `admin`,其他主体仅能调用只读端点。响应统一包裹,字段名统一为 snake_case。
 
 **公共端点(无需认证)**
 
@@ -110,8 +115,8 @@ FasterEdge2Api/
 |------|------|------|
 | GET | `/healthz` | 存活探针 |
 | GET | `/api/v1/logo` | 框架 logo |
-| GET | `/api/v1/info` | 框架版本信息 |
-| GET | `/api/v1/components` | 已注册 Data / Ability 清单 |
+
+`/api/v1/info` 与 `/api/v1/components` 需要认证,避免未授权版本和角色能力枚举。
 
 **拓扑(NetMap)**
 
@@ -180,16 +185,20 @@ FasterEdge2Api/
 | `--listen` | `FE2A_LISTEN` | `:8080` | HTTP 监听地址 |
 | `--node-name` | `FE2A_NODE_NAME` | `edge-1` | 本节点名 |
 | `--role` | `FE2A_ROLE` | `neutral` | `cloud` / `edge` / `neutral` |
-| `--keyring` | `FE2A_KEYRING_PATH` | *(空)* | KeyringData 持久化快照路径 |
-| — | `FE2A_SHUTDOWN_TIMEOUT` | `5s` | 优雅退出等待时长 |
+| `--keyring` | `FE2A_KEYRING_PATH` | *(空)* | KeyringData 持久化快照路径;`token` 命令必填 |
+| `--tls-cert` | `FE2A_TLS_CERT` | *(空)* | TLS 证书路径,需与私钥同时提供 |
+| `--tls-key` | `FE2A_TLS_KEY` | *(空)* | TLS 私钥路径,需与证书同时提供 |
+| — | `FE2A_SHUTDOWN_TIMEOUT` | `5s` | HTTP 与组件优雅退出等待时长 |
 
 ### 七、安全说明
 
-- 所有管理端点(除公共端点)都要求 `Authorization: Bearer <token>`;令牌为 OneKey HMAC-SHA256 签名,过期 / 吊销 / 密钥轮换后均失效。
-- **首个令牌只能通过 `fasteredge2api token` 签发**(进程内可信),不开放无凭据的 HTTP 引导端点,避免口令爆破面。
-- `serve` 与 `token` 必须使用**同一个** `--keyring` 路径,否则密钥不一致导致认证失败;密钥轮换后旧令牌全部失效,需重新签发。
-- Keyring 快照文件以 `0600` 权限落盘(FasterEdge KeyringData 保证),请妥善保管。
-- 部署建议绑定内网 / 置于反向代理之后,并启用 TLS。
+- 严格要求 `Authorization: Bearer <token>`;裸 token 和其他 scheme 均拒绝。令牌过期 / 吊销 / 密钥轮换后即时失效。
+- **首个 admin 令牌只能通过 `fasteredge2api token` 签发**,且必须指定持久 `--keyring`;无凭据的 HTTP 引导端点不存在。
+- 高风险管理与所有写操作仅允许 subject 为 `admin` 的令牌;普通节点令牌只能执行只读查询。
+- `serve` 与 `token` 使用同一个 keyring 路径,但不能同时打开:进程级排他锁会拒绝第二个进程,避免快照覆盖。运行中请通过 `/api/v1/auth/issue` 签发新令牌。
+- 签发、吊销、revoke-all、轮换成功后立即原子落盘;Keyring 快照与锁文件权限为 `0600`。
+- 生产环境必须使用 `--tls-cert/--tls-key` 原生 HTTPS,或仅监听可信内网并置于 TLS 反向代理后。Bearer token 在明文 HTTP 中可被重放。
+- 角色能力在启动挂载时确定;运行期只允许重复设置当前角色,改变角色需使用新的 `--role` 重启。
 
 ### 八、开发与测试
 

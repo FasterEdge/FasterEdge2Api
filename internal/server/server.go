@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FasterEdge/FasterEdge/ability"
 	"github.com/FasterEdge/FasterEdge/types"
 
 	"github.com/FasterEdge/FasterEdge2Api/internal/engine"
@@ -37,11 +38,12 @@ func New(eng *engine.Engine, opts Options) *Server {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	s.srv = &http.Server{
-		Handler:           s.recoverMiddleware(mux),
+		Handler:           s.securityHeaders(s.recoverMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 	return s
 }
@@ -57,11 +59,20 @@ func (s *Server) Serve(l net.Listener) error { return s.srv.Serve(l) }
 
 // ListenAndServe 监听 addr 并服务,直到 l 被关闭或发生了致命错误。
 func (s *Server) ListenAndServe(addr string) error {
+	return s.ListenAndServeTLS(addr, "", "")
+}
+
+// ListenAndServeTLS 在 cert/key 同时提供时启用 HTTPS；均为空时使用 HTTP。
+func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	s.logger.Printf("FasterEdge2Api listening on %s (role=%s)", l.Addr(), s.engine.Role())
+	if certFile != "" {
+		s.logger.Printf("FasterEdge2Api HTTPS listening on %s (role=%s)", l.Addr(), s.engine.Role())
+		return s.srv.ServeTLS(l, certFile, keyFile)
+	}
+	s.logger.Printf("FasterEdge2Api HTTP listening on %s (role=%s); use TLS or a trusted TLS reverse proxy", l.Addr(), s.engine.Role())
 	return s.Serve(l)
 }
 
@@ -75,59 +86,59 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 // ------------------------- 路由注册 -------------------------
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
-	// 公共端点(无需认证)。
+	// 公共端点仅保留无敏感信息的存活探针与 logo。
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /api/v1/logo", s.handleLogo)
-	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
-	mux.HandleFunc("GET /api/v1/components", s.handleComponents)
+	mux.HandleFunc("GET /api/v1/info", s.auth(s.handleInfo))
+	mux.HandleFunc("GET /api/v1/components", s.auth(s.handleComponents))
 
 	// 拓扑(NetMapData / NetMapAbility)。
 	mux.HandleFunc("GET /api/v1/topology", s.auth(s.handleTopology))
 	mux.HandleFunc("GET /api/v1/node", s.auth(s.handleNodeInfo))
-	mux.HandleFunc("PUT /api/v1/node/name", s.auth(s.handleSetNodeName))
+	mux.HandleFunc("PUT /api/v1/node/name", s.auth(s.admin(s.handleSetNodeName)))
 	mux.HandleFunc("GET /api/v1/node/interfaces", s.auth(s.handleNodeInterfaces))
-	mux.HandleFunc("PUT /api/v1/node/default-interface", s.auth(s.handleSetDefaultIface))
+	mux.HandleFunc("PUT /api/v1/node/default-interface", s.auth(s.admin(s.handleSetDefaultIface)))
 	mux.HandleFunc("GET /api/v1/peers", s.auth(s.handleListPeers))
-	mux.HandleFunc("POST /api/v1/peers", s.auth(s.handleRegisterPeer))
+	mux.HandleFunc("POST /api/v1/peers", s.auth(s.admin(s.handleRegisterPeer)))
 	mux.HandleFunc("GET /api/v1/peers/{name}", s.auth(s.handleLookupPeer))
-	mux.HandleFunc("PUT /api/v1/peers/{name}", s.auth(s.handleUpdatePeer))
-	mux.HandleFunc("DELETE /api/v1/peers/{name}", s.auth(s.handleUnregisterPeer))
+	mux.HandleFunc("PUT /api/v1/peers/{name}", s.auth(s.admin(s.handleUpdatePeer)))
+	mux.HandleFunc("DELETE /api/v1/peers/{name}", s.auth(s.admin(s.handleUnregisterPeer)))
 
 	// 角色(RoleAbility)。
 	mux.HandleFunc("GET /api/v1/role", s.auth(s.handleGetRole))
-	mux.HandleFunc("PUT /api/v1/role", s.auth(s.handleSetRole))
+	mux.HandleFunc("PUT /api/v1/role", s.auth(s.admin(s.handleSetRole)))
 
 	// 云端(CloudRoleAbility,仅 role=cloud 时可用)。
 	mux.HandleFunc("GET /api/v1/cloud", s.auth(s.handleCloudDescribe))
 	mux.HandleFunc("GET /api/v1/cloud/controller", s.auth(s.handleCloudGetController))
-	mux.HandleFunc("PUT /api/v1/cloud/controller", s.auth(s.handleCloudSetController))
+	mux.HandleFunc("PUT /api/v1/cloud/controller", s.auth(s.admin(s.handleCloudSetController)))
 	mux.HandleFunc("GET /api/v1/cloud/services", s.auth(s.handleCloudListServices))
-	mux.HandleFunc("POST /api/v1/cloud/services", s.auth(s.handleCloudRegisterService))
-	mux.HandleFunc("DELETE /api/v1/cloud/services/{name}", s.auth(s.handleCloudUnregisterService))
+	mux.HandleFunc("POST /api/v1/cloud/services", s.auth(s.admin(s.handleCloudRegisterService)))
+	mux.HandleFunc("DELETE /api/v1/cloud/services/{name}", s.auth(s.admin(s.handleCloudUnregisterService)))
 	mux.HandleFunc("GET /api/v1/cloud/status", s.auth(s.handleCloudGetStatus))
-	mux.HandleFunc("PUT /api/v1/cloud/status", s.auth(s.handleCloudSetStatus))
+	mux.HandleFunc("PUT /api/v1/cloud/status", s.auth(s.admin(s.handleCloudSetStatus)))
 	mux.HandleFunc("POST /api/v1/cloud/heartbeat", s.auth(s.handleCloudHeartbeat))
 
 	// 边缘(EdgeRoleAbility,仅 role=edge 时可用)。
 	mux.HandleFunc("GET /api/v1/edge", s.auth(s.handleEdgeDescribe))
 	mux.HandleFunc("GET /api/v1/edge/zone", s.auth(s.handleEdgeGetZone))
-	mux.HandleFunc("PUT /api/v1/edge/zone", s.auth(s.handleEdgeSetZone))
+	mux.HandleFunc("PUT /api/v1/edge/zone", s.auth(s.admin(s.handleEdgeSetZone)))
 	mux.HandleFunc("GET /api/v1/edge/capabilities", s.auth(s.handleEdgeListCapabilities))
-	mux.HandleFunc("POST /api/v1/edge/capabilities", s.auth(s.handleEdgeAddCapability))
-	mux.HandleFunc("PUT /api/v1/edge/capabilities", s.auth(s.handleEdgeSetCapabilities))
-	mux.HandleFunc("DELETE /api/v1/edge/capabilities/{name}", s.auth(s.handleEdgeRemoveCapability))
-	mux.HandleFunc("POST /api/v1/edge/latency", s.auth(s.handleEdgeRecordLatency))
+	mux.HandleFunc("POST /api/v1/edge/capabilities", s.auth(s.admin(s.handleEdgeAddCapability)))
+	mux.HandleFunc("PUT /api/v1/edge/capabilities", s.auth(s.admin(s.handleEdgeSetCapabilities)))
+	mux.HandleFunc("DELETE /api/v1/edge/capabilities/{name}", s.auth(s.admin(s.handleEdgeRemoveCapability)))
+	mux.HandleFunc("POST /api/v1/edge/latency", s.auth(s.admin(s.handleEdgeRecordLatency)))
 	mux.HandleFunc("GET /api/v1/edge/metrics", s.auth(s.handleEdgeGetMetrics))
-	mux.HandleFunc("PUT /api/v1/edge/online", s.auth(s.handleEdgeSetOnline))
+	mux.HandleFunc("PUT /api/v1/edge/online", s.auth(s.admin(s.handleEdgeSetOnline)))
 
 	// 认证与令牌管理(OneKeyAbility)。
-	mux.HandleFunc("POST /api/v1/auth/issue", s.auth(s.handleAuthIssue))
+	mux.HandleFunc("POST /api/v1/auth/issue", s.auth(s.admin(s.handleAuthIssue)))
 	mux.HandleFunc("POST /api/v1/auth/verify", s.auth(s.handleAuthVerify))
-	mux.HandleFunc("POST /api/v1/auth/revoke", s.auth(s.handleAuthRevoke))
-	mux.HandleFunc("POST /api/v1/auth/revoke-all", s.auth(s.handleAuthRevokeAll))
-	mux.HandleFunc("GET /api/v1/auth/tokens", s.auth(s.handleAuthListTokens))
+	mux.HandleFunc("POST /api/v1/auth/revoke", s.auth(s.admin(s.handleAuthRevoke)))
+	mux.HandleFunc("POST /api/v1/auth/revoke-all", s.auth(s.admin(s.handleAuthRevokeAll)))
+	mux.HandleFunc("GET /api/v1/auth/tokens", s.auth(s.admin(s.handleAuthListTokens)))
 	mux.HandleFunc("GET /api/v1/auth/status", s.auth(s.handleAuthStatus))
-	mux.HandleFunc("POST /api/v1/auth/rotate", s.auth(s.handleAuthRotate))
+	mux.HandleFunc("POST /api/v1/auth/rotate", s.auth(s.admin(s.handleAuthRotate)))
 }
 
 // ------------------------- 中间件 -------------------------
@@ -145,16 +156,46 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// auth 中间件解析 Authorization: Bearer <token>,把凭据注入请求上下文。
-// 凭据为 OneKey 传输编码形式(subject.issuedNanos.expiresNanos.signature)。
+// admin 将高风险管理操作限制为 bootstrap admin 主体。
+func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subject, ok := subjectFromContext(r.Context())
+		if !ok || subject != "admin" {
+			writeError(w, http.StatusForbidden, "admin authorization required")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// auth 在进入 handler 前完成真实验签,避免无效凭据探测角色或输入差异。
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cred, ok := credentialFromRequest(r)
 		if !ok {
-			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
+			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		ctx := withCredential(r.Context(), cred)
+		subject, err := s.engine.AuthenticatedCommand(r.Context(), cred, "OneKeyAbility", ability.OneKeyCommandVerifyToken, cred)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		verified, ok := subject.(string)
+		if !ok || verified == "" {
+			writeError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		ctx := withCredential(r.Context(), cred, verified)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -189,8 +230,9 @@ func errStatus(err error) int {
 
 // fmtErr 生成统一的错误响应体。
 func fmtErr(status int, err error) map[string]any {
-	msg := "internal server error"
-	if err != nil {
+	msg := http.StatusText(status)
+	// 仅 4xx 业务错误可返回受控信息;认证与服务端错误统一脱敏。
+	if err != nil && status >= 400 && status < 500 && status != http.StatusUnauthorized && status != http.StatusForbidden {
 		msg = err.Error()
 	}
 	return map[string]any{"ok": false, "error": map[string]any{"code": status, "message": msg}}

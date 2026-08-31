@@ -7,9 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	fasteredge "github.com/FasterEdge/FasterEdge"
 	"github.com/FasterEdge/FasterEdge/ability"
@@ -28,7 +32,12 @@ type Engine struct {
 	runDone   chan error
 	runErr    atomic.Value // *runResult;由后台 goroutine 写入,Err()/Close() 只读
 	started   atomic.Bool
-	closeMu   sync.Mutex // 串行化 Close 的等待,避免多个调用者竞争 runDone
+	stopping  atomic.Bool
+	closed    bool
+	closeErr  error
+	closeMu   sync.Mutex // 串行化生命周期变更与 Close 等待
+	commandMu sync.Mutex // 底层 OneKey 查询返回指针,串行化命令避免 verify/revoke 竞态
+	lockFile  *os.File   // 持久 Keyring 的跨进程排他锁
 }
 
 // runResult 包装后台运行结果,避免 atomic.Value 存储 nil error 触发 panic。
@@ -44,11 +53,46 @@ func New(cfg config.Config) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	atom := fasteredge.InitAtom()
-	if err := populateAtom(atom, cfg); err != nil {
+	lockFile, err := lockKeyring(cfg.KeyringPath)
+	if err != nil {
 		return nil, err
 	}
-	return &Engine{cfg: cfg, atom: atom}, nil
+	atom := fasteredge.InitAtom()
+	if err := populateAtom(atom, cfg); err != nil {
+		// populateAtom 可能已完成 PreRun；尽力卸载以释放组件资源。
+		_ = fasteredge.CloseAtom(context.Background(), atom, fasteredge.WithShutdownTimeout(cfg.ShutdownTimeout))
+		releaseKeyringLock(lockFile)
+		return nil, err
+	}
+	return &Engine{cfg: cfg, atom: atom, lockFile: lockFile}, nil
+}
+
+// lockKeyring 在持久 Keyring 整个生命周期内持有非阻塞排他锁,
+// 防止运行中的 serve 与另一个 token/serve 进程互相覆盖快照。
+func lockKeyring(path string) (*os.File, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create keyring directory: %w", err)
+	}
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open keyring lock: %w", err)
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("keyring %q is already in use by another process: %w", path, err)
+	}
+	return f, nil
+}
+
+func releaseKeyringLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	_ = f.Close()
 }
 
 // populateAtom 注册数据、能力、角色并挂载。
@@ -79,21 +123,18 @@ func populateAtom(atom *types.Atom, cfg config.Config) error {
 		return fmt.Errorf("set node name: %w", out.Err)
 	}
 
+	// 所有节点都显式设置角色；neutral 也不能留成空字符串。
+	if out := atom.CommandContext(context.Background(), "RoleAbility",
+		ability.CommandSetRole, ability.RoleAbilityArgs{Role: string(cfg.Role)}); out.Err != nil {
+		return fmt.Errorf("set %s role: %w", cfg.Role, out.Err)
+	}
 	// 设置角色后再注册角色能力,保证 Cloud/EdgeRoleAbility 挂载检查通过。
 	switch cfg.Role {
 	case config.RoleCloud:
-		if out := atom.CommandContext(context.Background(), "RoleAbility",
-			ability.CommandSetRole, ability.RoleAbilityArgs{Role: "cloud"}); out.Err != nil {
-			return fmt.Errorf("set cloud role: %w", out.Err)
-		}
 		if err := atom.AddAbility(ability.NewCloudRoleAbility()); err != nil {
 			return err
 		}
 	case config.RoleEdge:
-		if out := atom.CommandContext(context.Background(), "RoleAbility",
-			ability.CommandSetRole, ability.RoleAbilityArgs{Role: "edge"}); out.Err != nil {
-			return fmt.Errorf("set edge role: %w", out.Err)
-		}
 		if err := atom.AddAbility(ability.NewEdgeRoleAbility()); err != nil {
 			return err
 		}
@@ -156,11 +197,22 @@ func (e *Engine) Role() config.Role { return e.cfg.Role }
 // Start 在后台启动 Atom 运行时(监督 Runner 并负责优雅卸载)。
 // 返回后错误只能通过 Err() 获取。
 func (e *Engine) Start(parent context.Context) error {
-	if e.started.Load() {
-		return errors.New("engine already started")
+	if e == nil || e.atom == nil {
+		return types.ErrNilAtom
 	}
 	if parent == nil {
 		return types.ErrNilContext
+	}
+	e.closeMu.Lock()
+	defer e.closeMu.Unlock()
+	if e.started.Load() {
+		return errors.New("engine already started")
+	}
+	if e.stopping.Load() {
+		return errors.New("engine is stopping")
+	}
+	if e.closed {
+		return errors.New("engine already closed")
 	}
 	ctx, cancel := context.WithCancel(parent)
 	e.cancelRun = cancel
@@ -185,8 +237,13 @@ func (e *Engine) Err() error {
 	if v == nil {
 		return nil
 	}
-	err := v.(*runResult).err
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	return normalizeRunError(v.(*runResult).err)
+}
+
+// normalizeRunError 只吞掉纯粹的正常取消。若取消错误与卸载/超时错误被 Join,
+// 则保留完整错误,避免掩盖 Keyring 落盘或组件清理失败。
+func normalizeRunError(err error) error {
+	if err == nil || err == context.Canceled || err == context.DeadlineExceeded {
 		return nil
 	}
 	return err
@@ -199,31 +256,53 @@ func (e *Engine) Close(ctx context.Context) error {
 	if e == nil || e.atom == nil {
 		return types.ErrNilAtom
 	}
+	if ctx == nil {
+		return types.ErrNilContext
+	}
+	e.stopping.Store(true)
 	e.closeMu.Lock()
 	defer e.closeMu.Unlock()
+	e.commandMu.Lock()
+	defer e.commandMu.Unlock()
 
+	if e.closed {
+		if v := e.runErr.Load(); v != nil {
+			return normalizeRunError(v.(*runResult).err)
+		}
+		return e.closeErr
+	}
 	if !e.started.Load() {
-		return fasteredge.CloseAtom(ctx, e.atom, fasteredge.WithShutdownTimeout(e.cfg.ShutdownTimeout))
+		err := fasteredge.CloseAtom(ctx, e.atom, fasteredge.WithShutdownTimeout(e.cfg.ShutdownTimeout))
+		if err == nil {
+			e.closed = true
+			releaseKeyringLock(e.lockFile)
+			e.lockFile = nil
+		}
+		e.closeErr = err
+		return err
 	}
 	// 若已结束,直接返回存储的错误(幂等)。
 	if v := e.runErr.Load(); v != nil {
-		err := v.(*runResult).err
-		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil
-		}
-		return err
+		e.closeErr = normalizeRunError(v.(*runResult).err)
+		e.closed = true
+		releaseKeyringLock(e.lockFile)
+		e.lockFile = nil
+		return e.closeErr
 	}
 	if e.cancelRun != nil {
 		e.cancelRun()
 	}
 	select {
 	case err := <-e.runDone:
-		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil
-		}
-		return err
+		e.closeErr = normalizeRunError(err)
+		e.closed = true
+		releaseKeyringLock(e.lockFile)
+		e.lockFile = nil
+		return e.closeErr
 	case <-ctx.Done():
-		return ctx.Err()
+		// 后台清理仍可能继续,不标记 closed,允许稍后重试等待。
+		e.closeErr = ctx.Err()
+		return e.closeErr
 	}
 }
 
@@ -233,9 +312,20 @@ func (e *Engine) AuthenticatedCommand(ctx context.Context, credential ability.On
 	if e == nil || e.atom == nil {
 		return nil, types.ErrNilAtom
 	}
+	if e.stopping.Load() {
+		return nil, errors.New("engine is stopping")
+	}
+	e.commandMu.Lock()
+	defer e.commandMu.Unlock()
+	if e.stopping.Load() {
+		return nil, errors.New("engine is stopping")
+	}
 	out := e.atom.AuthenticatedCommandContext(ctx, credential, component, command, args)
 	if out.Err != nil {
 		return nil, out.Err
+	}
+	if err := e.persistAfterMutation(component, command); err != nil {
+		return nil, err
 	}
 	return out.Value, nil
 }
@@ -246,11 +336,44 @@ func (e *Engine) TrustedCommand(ctx context.Context, component, command string, 
 	if e == nil || e.atom == nil {
 		return nil, types.ErrNilAtom
 	}
+	if e.stopping.Load() {
+		return nil, errors.New("engine is stopping")
+	}
+	e.commandMu.Lock()
+	defer e.commandMu.Unlock()
+	if e.stopping.Load() {
+		return nil, errors.New("engine is stopping")
+	}
 	out := e.atom.CommandContext(ctx, component, command, args)
 	if out.Err != nil {
 		return nil, out.Err
 	}
+	if err := e.persistAfterMutation(component, command); err != nil {
+		return nil, err
+	}
 	return out.Value, nil
+}
+
+func (e *Engine) persistAfterMutation(component, command string) error {
+	if e.cfg.KeyringPath == "" || component != "OneKeyAbility" {
+		return nil
+	}
+	switch command {
+	case ability.OneKeyCommandIssueToken, ability.OneKeyCommandRevokeToken,
+		ability.OneKeyCommandRevokeAll, ability.OneKeyCommandRotate:
+		kr, ok := e.atom.Data("KeyringData")
+		if !ok {
+			return types.ErrMissingDependency
+		}
+		kd, ok := kr.(*data.KeyringData)
+		if !ok {
+			return types.ErrWrongDependencyType
+		}
+		if err := kd.SaveSnapshot(e.cfg.KeyringPath); err != nil {
+			return fmt.Errorf("persist keyring mutation: %w", err)
+		}
+	}
+	return nil
 }
 
 // IssueBootstrapToken 通过可信管道签发首个访问令牌(CLI 引导用)。

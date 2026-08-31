@@ -19,7 +19,11 @@ type issueTokenReq struct {
 func (s *Server) handleAuthIssue(w http.ResponseWriter, r *http.Request) {
 	var req issueTokenReq
 	if err := readJSONBody(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !validIdentifier(req.Subject) {
+		writeError(w, http.StatusBadRequest, "subject must be 1-128 safe characters")
 		return
 	}
 	var ttl time.Duration
@@ -37,11 +41,18 @@ func (s *Server) handleAuthIssue(w http.ResponseWriter, r *http.Request) {
 		writeCommandErr(w, err)
 		return
 	}
-	val, err := toStringMap(out)
-	if err != nil {
-		writeCommandErr(w, err)
+	issued, ok := out.(ability.OneKeyToken)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "token issuance failed")
 		return
 	}
+	val, err := toStringMap(issued)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "token issuance failed")
+		return
+	}
+	// 直接返回传输编码,避免客户端往返 RFC3339 时丢失纳秒精度。
+	val["token"] = ability.EncodeForTransmission(issued)
 	writeData(w, val)
 }
 
@@ -80,7 +91,11 @@ type revokeTokenReq struct {
 func (s *Server) handleAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	var req revokeTokenReq
 	if err := readJSONBody(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !validIdentifier(req.Subject) {
+		writeError(w, http.StatusBadRequest, "subject must be 1-128 safe characters")
 		return
 	}
 	val, err := s.authed(r, "OneKeyAbility", ability.OneKeyCommandRevokeToken,
