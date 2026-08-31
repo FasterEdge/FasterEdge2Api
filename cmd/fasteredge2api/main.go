@@ -1,3 +1,4 @@
+// FasterEdge 开源项目 · https://github.com/FasterEdge · https://gitee.com/FasterEdge
 // Command fasteredge2api 是 FasterEdge 集群拓扑与管理操作的 HTTP API 网关。
 //
 // 用法:
