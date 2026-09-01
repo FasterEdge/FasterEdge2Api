@@ -43,7 +43,7 @@ jobs:
     - uses: actions/upload-artifact@v4
       with:
         name: 'fasteredge2api-${{ matrix.target }}'
-        path: 'fasteredge2api-${{ matrix.target }}.tar.gz'
+        path: '${{ github.workspace }}/fasteredge2api-${{ matrix.target }}.*'
         if-no-files-found: 'error'
         retention-days: 1
 
