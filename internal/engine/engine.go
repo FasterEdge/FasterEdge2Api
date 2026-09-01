@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	fasteredge "github.com/FasterEdge/FasterEdge"
 	"github.com/FasterEdge/FasterEdge/ability"
 	"github.com/FasterEdge/FasterEdge/data"
@@ -80,7 +78,7 @@ func lockKeyring(path string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open keyring lock: %w", err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := lockFileExclusive(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("keyring %q is already in use by another process: %w", path, err)
 	}
@@ -91,7 +89,7 @@ func releaseKeyringLock(f *os.File) {
 	if f == nil {
 		return
 	}
-	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	unlockFile(f)
 	_ = f.Close()
 }
 
