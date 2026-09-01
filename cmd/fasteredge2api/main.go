@@ -24,7 +24,7 @@ import (
 	"github.com/FasterEdge/FasterEdge2Api/internal/server"
 )
 
-const version = "0.1.0"
+const version = "1.0.20260901"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
