@@ -10,4 +10,5 @@ RUN addgroup -S app && adduser -S -G app app
 COPY --from=build /out/app /usr/local/bin/app
 USER app
 EXPOSE 8080
-ENTRYPOINT ["app"]
+# 默认以 serve 子命令启动 HTTP API 服务（无参 ENTRYPOINT 会打印 usage 后退出）
+ENTRYPOINT ["app", "serve"]
