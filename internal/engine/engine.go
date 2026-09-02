@@ -1,3 +1,4 @@
+// FasterEdge 开源项目 - Github: https://github.com/FasterEdge - Gitee: https://gitee.com/FasterEdge
 // Package engine 负责组装 FasterEdge Atom 并把它暴露给 HTTP API 层。
 // 它根据配置决定本节点的集群角色,注册对应的角色能力,
 // 并统一通过 AuthenticatedCommandContext 执行远程调用(OneKey 认证)。

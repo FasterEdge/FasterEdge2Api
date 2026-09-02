@@ -1,3 +1,4 @@
+// FasterEdge 开源项目 - Github: https://github.com/FasterEdge - Gitee: https://gitee.com/FasterEdge
 // Package server 实现 FasterEdge2Api 的 HTTP 服务层:
 // 路由、OneKey 认证中间件、错误映射与 JSON 响应。
 package server
