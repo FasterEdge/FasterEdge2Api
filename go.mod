@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/FasterEdge/FasterEdge v1.0.20260902
-	golang.org/x/sys v0.36.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
