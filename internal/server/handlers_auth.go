@@ -36,8 +36,8 @@ func (s *Server) handleAuthIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		ttl = d
 	}
-	out, err := s.authed(r, "OneKeyAbility", ability.OneKeyCommandIssueToken,
-		ability.OneKeyIssueTokenArgs{Subject: req.Subject, TTL: ttl, Algorithm: req.Algorithm})
+	out, err := s.authedTrusted(r, "OneKeyAbility", ability.OneKeyCommandIssueToken,
+		ability.OneKeyIssueTokenArgs{Subject: req.Subject, TTL: ttl, Algorithm: req.Algorithm}, true)
 	if err != nil {
 		writeCommandErr(w, err)
 		return
@@ -99,8 +99,8 @@ func (s *Server) handleAuthRevoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "subject must be 1-128 safe characters")
 		return
 	}
-	val, err := s.authed(r, "OneKeyAbility", ability.OneKeyCommandRevokeToken,
-		ability.OneKeyRevokeTokenArgs{Subject: req.Subject})
+	val, err := s.authedTrusted(r, "OneKeyAbility", ability.OneKeyCommandRevokeToken,
+		ability.OneKeyRevokeTokenArgs{Subject: req.Subject}, true)
 	if err != nil {
 		writeCommandErr(w, err)
 		return
@@ -110,7 +110,7 @@ func (s *Server) handleAuthRevoke(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthRevokeAll 吊销全部令牌,返回被吊销数量。
 func (s *Server) handleAuthRevokeAll(w http.ResponseWriter, r *http.Request) {
-	val, err := s.authed(r, "OneKeyAbility", ability.OneKeyCommandRevokeAll, nil)
+	val, err := s.authedTrusted(r, "OneKeyAbility", ability.OneKeyCommandRevokeAll, nil, true)
 	if err != nil {
 		writeCommandErr(w, err)
 		return
@@ -140,7 +140,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthRotate 轮换共享密钥(所有已签发令牌立即失效)。
 func (s *Server) handleAuthRotate(w http.ResponseWriter, r *http.Request) {
-	val, err := s.authed(r, "OneKeyAbility", ability.OneKeyCommandRotate, nil)
+	val, err := s.authedTrusted(r, "OneKeyAbility", ability.OneKeyCommandRotate, nil, true)
 	if err != nil {
 		writeCommandErr(w, err)
 		return
