@@ -1,10 +1,10 @@
 module github.com/FasterEdge/FasterEdge2Api
 
-go 1.25.5
+go 1.26.0
 
 require (
 	github.com/FasterEdge/FasterEdge v1.0.20260913
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
