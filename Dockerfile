@@ -10,7 +10,10 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/app ./cmd/fasteredge2api
 FROM alpine:3.20
 RUN addgroup -S app && adduser -S -G app app
 COPY --from=build /out/app /usr/local/bin/app
+RUN mkdir -p /data && chown -R app:app /data
 USER app
+ENV FE2A_KEYRING_PATH=/data/keyring.json
 EXPOSE 8080
 # 默认以 serve 子命令启动 HTTP API 服务（无参 ENTRYPOINT 会打印 usage 后退出）
-ENTRYPOINT ["app", "serve"]
+ENTRYPOINT ["app"]
+CMD ["serve"]
