@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # 多阶段构建：golang 编译 → alpine 精简运行镜像（约 10MB）
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
+# 通过 goproxy.cn 拉取依赖, 避免在无外网代理环境(如国内网络/受限内网)构建超时
+ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/app ./cmd/fasteredge2api
@@ -8,7 +10,10 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/app ./cmd/fasteredge2api
 FROM alpine:3.20
 RUN addgroup -S app && adduser -S -G app app
 COPY --from=build /out/app /usr/local/bin/app
+RUN mkdir -p /data && chown -R app:app /data
 USER app
+ENV FE2A_KEYRING_PATH=/data/keyring.json
 EXPOSE 8080
 # 默认以 serve 子命令启动 HTTP API 服务（无参 ENTRYPOINT 会打印 usage 后退出）
-ENTRYPOINT ["app", "serve"]
+ENTRYPOINT ["app"]
+CMD ["serve"]

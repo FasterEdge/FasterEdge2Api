@@ -178,6 +178,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// errNotAuthorized 表示凭据有效但权限不足(HTTP 403)。
+var errNotAuthorized = errors.New("not authorized")
+
 // auth 在进入 handler 前完成真实验签,避免无效凭据探测角色或输入差异。
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +226,9 @@ func errStatus(err error) int {
 	if errors.Is(err, types.ErrDuplicateComponent) {
 		return http.StatusConflict
 	}
+	if errors.Is(err, errNotAuthorized) {
+		return http.StatusForbidden
+	}
 	if errors.Is(err, types.ErrMissingDependency) || errors.Is(err, types.ErrWrongDependencyType) {
 		return http.StatusNotImplemented
 	}
@@ -246,4 +252,23 @@ func (s *Server) authed(r *http.Request, component, command string, args any) (a
 		return nil, types.ErrAuthenticationRequired
 	}
 	return s.engine.AuthenticatedCommand(r.Context(), cred, component, command, args)
+}
+
+// authedTrusted 先经 auth 中间件完成远程验签,再以本地可信通道执行核心框架
+// 限制为进程内调用的管理命令(issue_token/revoke_token/revoke_all/rotate)。
+// 核心 OneKeyAbility 将这些命令限定为本地调用,是为了防止任何持有效令牌的
+// 远程对端签发任意 subject 冒充身份或做吊销/轮换 DoS;HTTP 层作为本地可信
+// 边界:验签通过后由本进程代为执行管理操作。requireAdmin 时仅主体 "admin"
+// 可执行,其余已认证主体返回 403。
+func (s *Server) authedTrusted(r *http.Request, component, command string, args any, requireAdmin bool) (any, error) {
+	if requireAdmin {
+		subject, ok := subjectFromContext(r.Context())
+		if !ok {
+			return nil, types.ErrAuthenticationRequired
+		}
+		if strings.ToLower(subject) != "admin" {
+			return nil, errNotAuthorized
+		}
+	}
+	return s.engine.TrustedCommand(r.Context(), component, command, args)
 }
