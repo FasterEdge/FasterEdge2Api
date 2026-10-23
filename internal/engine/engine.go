@@ -122,21 +122,26 @@ func populateAtom(atom *types.Atom, cfg config.Config) error {
 		return fmt.Errorf("set node name: %w", out.Err)
 	}
 
-	// 所有节点都显式设置角色；neutral 也不能留成空字符串。
-	if out := atom.CommandContext(context.Background(), "RoleAbility",
-		ability.CommandSetRole, ability.RoleAbilityArgs{Role: string(cfg.Role)}); out.Err != nil {
-		return fmt.Errorf("set %s role: %w", cfg.Role, out.Err)
-	}
-	// 设置角色后再注册角色能力,保证 Cloud/EdgeRoleAbility 挂载检查通过。
+	// 显式设置核心角色(仅 cloud|edge 受框架核心支持; neutral 节点不设置核心角色,
+	// 也不注册 Cloud/EdgeRoleAbility, 与核心 RoleAbility 的 validRoles 保持一致)。
 	switch cfg.Role {
 	case config.RoleCloud:
+		if out := atom.CommandContext(context.Background(), "RoleAbility",
+			ability.CommandSetRole, ability.RoleAbilityArgs{Role: string(cfg.Role)}); out.Err != nil {
+			return fmt.Errorf("set %s role: %w", cfg.Role, out.Err)
+		}
 		if err := atom.AddAbility(ability.NewCloudRoleAbility()); err != nil {
 			return err
 		}
 	case config.RoleEdge:
+		if out := atom.CommandContext(context.Background(), "RoleAbility",
+			ability.CommandSetRole, ability.RoleAbilityArgs{Role: string(cfg.Role)}); out.Err != nil {
+			return fmt.Errorf("set %s role: %w", cfg.Role, out.Err)
+		}
 		if err := atom.AddAbility(ability.NewEdgeRoleAbility()); err != nil {
 			return err
 		}
+	default: // config.RoleNeutral: 核心框架仅接受 cloud|edge, neutral 节点跳过 set_role。
 	}
 
 	// 安装 OneKey 命令认证器:所有远程调用必须携带有效令牌。
