@@ -3,7 +3,7 @@ module github.com/FasterEdge/FasterEdge2Api
 go 1.27.4
 
 require (
-	github.com/FasterEdge/FasterEdge v1.0.20261116
+	github.com/FasterEdge/FasterEdge v1.0.20261124
 	golang.org/x/sys v0.50.0
 )
 
